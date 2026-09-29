@@ -1015,8 +1015,8 @@ func (node *AlgorandFullNode) InstallParticipationKey(partKeyBinary []byte) (acc
 		return account.ParticipationID{}, fmt.Errorf("cannot install partkey with missing (zero) parent address")
 	}
 
-	if err := node.advanceParticipationKey(partkey); err != nil {
-		node.log.Warnf("InstallParticipationKey: could not advance the participation key to the current round: %v", err)
+	if aerr := node.advanceParticipationKey(partkey); aerr != nil {
+		node.log.Warnf("InstallParticipationKey: could not advance the participation key to the current round: %v", aerr)
 	}
 
 	// Tell the AccountManager about the Participation (dupes don't matter) so we ignore the return value
