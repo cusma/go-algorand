@@ -1292,6 +1292,7 @@ func updateRollingFields(ctx context.Context, tx *sql.Tx, record ParticipationRe
 	// carries a zero-value placeholder in the cache, since Duplicate never
 	// hands out a nil Voting: nothing to persist for it.
 	var newHeader *crypto.OneTimeSignatureSecretsHeader
+	var unusable error
 	var snap crypto.OneTimeSignatureSecretsPersistent
 	if record.Voting != nil {
 		snap = votingSnapshot(record.Voting)
@@ -1299,15 +1300,21 @@ func updateRollingFields(ctx context.Context, tx *sql.Tx, record ParticipationRe
 	if record.Voting != nil && (len(rawHeader) > 0 || snap.Header() != (crypto.OneTimeSignatureSecretsHeader{})) {
 		// Fail closed: without the stored cursor there is no way to tell
 		// whether memory lags storage, and rewriting from memory could
-		// resurrect keys the registry already retired.
+		// resurrect keys the registry already retired.  The rows memory has
+		// consumed are still erased, and the rolling fields still persisted
+		// (the damaged header is kept).
 		stored, herr := decodeVotingHeader(rawHeader)
 		if herr != nil {
-			return fmt.Errorf("stored voting header for key %s is undecodable; refusing to rewrite voting rows from memory (copy its .partkey file aside, delete the key, and install the copy; or delete %s and restart to rebuild the registry from the key files): %v",
-				record.ParticipationID, config.ParticipationRegistryFilename, herr)
-		}
-		newHeader, err = syncVotingRows(tx, registryVotingTarget(pk), stored, snap)
-		if err != nil {
-			return err
+			if err = eraseConsumedVotingRows(tx, registryVotingTarget(pk), snap); err != nil {
+				return err
+			}
+			unusable = fmt.Errorf("%w for key %s; erased its consumed voting subkeys but refusing to rewrite the rest from memory (copy its .partkey file aside, delete the key, and install the copy; or delete %s and restart to rebuild the registry from the key files): %v",
+				errUnusableStoredHeader, record.ParticipationID, config.ParticipationRegistryFilename, herr)
+		} else {
+			newHeader, err = syncVotingRows(tx, registryVotingTarget(pk), stored, snap)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
@@ -1320,7 +1327,10 @@ func updateRollingFields(ctx context.Context, tx *sql.Tx, record ParticipationRe
 	result, err := tx.ExecContext(ctx, updateRollingFieldsSQL,
 		record.LastVote, record.LastBlockProposal, record.LastStateProof,
 		record.EffectiveFirst, record.EffectiveLast, rawNewHeader, pk)
-	return verifyExecWithOneRowEffected(err, result, "update rolling fields")
+	if err = verifyExecWithOneRowEffected(err, result, "update rolling fields"); err != nil {
+		return err
+	}
+	return unusable
 }
 
 func recordActive(record ParticipationRecord, on basics.Round) bool {

@@ -346,12 +346,15 @@ func TestSyncVotingRows(t *testing.T) {
 	execSQL(a, partDB, "UPDATE ParticipationAccount SET votingHeader=?", protocol.Encode(&ahead))
 	a.ErrorContains(sync(secrets), "refusing to resurrect")
 	// ... and so is an undecodable stored header (failing closed: a rewrite
-	// from possibly-stale memory could resurrect retired keys)
+	// from possibly-stale memory could resurrect retired keys), although the
+	// rows memory has consumed since are still erased
 	execSQL(a, partDB, "UPDATE ParticipationAccount SET votingHeader=?", []byte{0xff, 0x00})
 	batchRows, offsetRows := countTableRows(a, partDB, "VotingBatches"), countTableRows(a, partDB, "VotingOffsets")
-	a.ErrorContains(sync(secrets), "undecodable")
+	proto := config.Consensus[protocol.ConsensusCurrentVersion]
+	a.ErrorContains(<-part.DeleteOldKeys(basics.Round(5*dilution+6), proto), "undecodable") // consumes offset 5 of batch 5
 	a.Equal(batchRows, countTableRows(a, partDB, "VotingBatches"))
-	a.Equal(offsetRows, countTableRows(a, partDB, "VotingOffsets"))
+	a.Equal(offsetRows-1, countTableRows(a, partDB, "VotingOffsets"), "consumed offset row not erased")
+	current = votingSnapshot(secrets).Header()
 	execSQL(a, partDB, "UPDATE ParticipationAccount SET votingHeader=?", protocol.Encode(&current))
 
 	// jump that runs out of batches: exhausted, every row erased, and a

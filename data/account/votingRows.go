@@ -43,6 +43,12 @@ import (
 // rewriting the rows from memory.
 var errInconsistentVotingRows = errors.New("stored voting subkey rows are inconsistent with the stored header")
 
+// errUnusableStoredHeader reports a stored voting header that cannot be
+// decoded, so the transition from it cannot be computed.  The sync still
+// erases the rows memory has consumed (eraseConsumedVotingRows) and returns
+// this error; the caller commits that erasure and reports the error.
+var errUnusableStoredHeader = errors.New("stored voting header is undecodable")
+
 // votingRowTarget names the SQL statements of one row-oriented voting key
 // store: the .partkey file tables, or the registry tables scoped by pk.
 // prefixArgs (the registry pk) lead every statement's arguments, except
@@ -55,6 +61,7 @@ type votingRowTarget struct {
 	deleteBatchesBelow string // args: (prefixArgs..., threshold)
 	deleteAllOffsets   string // args: (prefixArgs...)
 	deleteOffsetsBelow string // args: (prefixArgs..., threshold)
+	deleteOffset       string // args: (prefixArgs..., index)
 	insertBatch        string // args: (prefixArgs..., index, data)
 	insertOffset       string // args: (prefixArgs..., index, data)
 	updateHeader       string // args: (header, prefixArgs...)
@@ -69,6 +76,7 @@ var partkeyFileVotingTarget = votingRowTarget{
 	deleteBatchesBelow: "DELETE FROM VotingBatches WHERE batch<?",
 	deleteAllOffsets:   "DELETE FROM VotingOffsets",
 	deleteOffsetsBelow: "DELETE FROM VotingOffsets WHERE off<?",
+	deleteOffset:       "DELETE FROM VotingOffsets WHERE off=?",
 	insertBatch:        "INSERT INTO VotingBatches (batch, data) VALUES (?, ?)",
 	insertOffset:       "INSERT INTO VotingOffsets (off, data) VALUES (?, ?)",
 	updateHeader:       "UPDATE ParticipationAccount SET votingHeader=?",
@@ -83,6 +91,7 @@ func registryVotingTarget(pk int64) votingRowTarget {
 		deleteBatchesBelow: "DELETE FROM VotingBatches WHERE pk=? AND batch<?",
 		deleteAllOffsets:   deleteVotingOffsetsPK,
 		deleteOffsetsBelow: "DELETE FROM VotingOffsets WHERE pk=? AND off<?",
+		deleteOffset:       "DELETE FROM VotingOffsets WHERE pk=? AND off=?",
 		insertBatch:        "INSERT INTO VotingBatches (pk, batch, data) VALUES (?, ?, ?)",
 		insertOffset:       "INSERT INTO VotingOffsets (pk, off, data) VALUES (?, ?, ?)",
 		updateHeader:       "UPDATE Rolling SET votingHeader=? WHERE pk=?",
@@ -205,10 +214,18 @@ func syncVotingRows(tx *sql.Tx, target votingRowTarget, stored crypto.OneTimeSig
 
 // syncVotingRowsAndHeader reads the stored header, runs syncVotingRows, and
 // writes the resulting header, for callers with no row update of their own to
-// fold it into.  An unusable stored header fails closed: without the stored
-// cursor there is no way to tell whether memory lags storage.
+// fold it into.  An undecodable stored header fails closed: without the
+// stored cursor there is no way to tell whether memory lags storage, so only
+// the rows memory has consumed are erased and errUnusableStoredHeader is
+// returned for the caller to commit that erasure and report.
 func syncVotingRowsAndHeader(tx *sql.Tx, target votingRowTarget, snap crypto.OneTimeSignatureSecretsPersistent) error {
 	stored, err := readVotingHeader(tx, target)
+	if errors.Is(err, errUnusableStoredHeader) {
+		if eerr := eraseConsumedVotingRows(tx, target, snap); eerr != nil {
+			return eerr
+		}
+		return fmt.Errorf("%w; erased the consumed voting subkeys but refusing to rewrite the rest from memory", err)
+	}
 	if err != nil {
 		return fmt.Errorf("%w; refusing to rewrite voting rows from memory", err)
 	}
@@ -283,9 +300,47 @@ func readVotingHeader(tx *sql.Tx, target votingRowTarget) (crypto.OneTimeSignatu
 	}
 	hdr, err := decodeVotingHeader(raw)
 	if err != nil {
-		return hdr, fmt.Errorf("stored voting header is undecodable: %w", err)
+		return hdr, fmt.Errorf("%w: %v", errUnusableStoredHeader, err)
 	}
 	return hdr, nil
+}
+
+// eraseConsumedVotingRows is the fallback for a store whose voting header
+// cannot be decoded: the transition to memory cannot be computed without the
+// stored cursor, but the subkey rows memory has already consumed can still be
+// deleted without trusting the header, i.e. batch rows below memory's first
+// batch (every batch row, once memory is exhausted) and offset rows memory
+// does not hold byte for byte.  It never inserts, so it cannot resurrect a
+// subkey, and it leaves the damaged header in place, so the store is still
+// excluded or quarantined at the next load.
+func eraseConsumedVotingRows(tx *sql.Tx, target votingRowTarget, snap crypto.OneTimeSignatureSecretsPersistent) error {
+	var err error
+	if snap.Header().Exhausted() {
+		_, err = tx.Exec(target.deleteAllBatches, target.prefixArgs...)
+	} else {
+		_, err = tx.Exec(target.deleteBatchesBelow, target.args(int64(snap.FirstBatch))...)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to erase consumed voting batch subkeys: %w", err)
+	}
+
+	live := make(map[uint64][]byte, len(snap.Offsets))
+	for _, row := range snap.EncodedOffsets() {
+		live[row.Index] = row.Key
+	}
+	stored, err := readKeyedSubkeys(tx, target.selectOffsets, target.prefixArgs...)
+	if err != nil {
+		return fmt.Errorf("failed to read voting offset subkeys: %w", err)
+	}
+	for _, row := range stored {
+		if key, ok := live[row.Index]; ok && bytes.Equal(key, row.Key) {
+			continue
+		}
+		if _, err := tx.Exec(target.deleteOffset, target.args(int64(row.Index))...); err != nil {
+			return fmt.Errorf("failed to erase a consumed voting offset subkey: %w", err)
+		}
+	}
+	return nil
 }
 
 // readVotingRows reads the subkey rows of a key, each ordered by index.

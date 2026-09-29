@@ -19,6 +19,7 @@ package account
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 
@@ -193,10 +194,17 @@ func (part PersistedParticipation) DeleteOldKeys(current basics.Round, proto con
 
 	errorCh := make(chan error, 1)
 	deleteOldKeys := func() {
+		var unusable error
 		err := part.Store.Atomic(func(ctx context.Context, tx *sql.Tx) error {
+			unusable = nil
 			// compare the stored header against memory and write only the
 			// transition instead of rewriting the whole keyset
 			err := syncVotingRowsAndHeader(tx, partkeyFileVotingTarget, votingSnapshot(part.Voting))
+			if errors.Is(err, errUnusableStoredHeader) {
+				// the consumed subkeys were erased: commit that, then report
+				unusable = err
+				return nil
+			}
 			if err != nil {
 				return fmt.Errorf("Participation.DeleteOldKeys: %v", err)
 			}
@@ -204,6 +212,9 @@ func (part PersistedParticipation) DeleteOldKeys(current basics.Round, proto con
 		})
 		if err == nil {
 			err = checkpointWAL(part.Store)
+		}
+		if err == nil && unusable != nil {
+			err = fmt.Errorf("Participation.DeleteOldKeys: %w", unusable)
 		}
 		errorCh <- err
 		close(errorCh)

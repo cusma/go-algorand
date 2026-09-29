@@ -382,7 +382,7 @@ func (f *flushOp) apply(db *participationDB) error {
 	}
 
 	// Each record is written under its own savepoint so one record that
-	// cannot be persisted (e.g. an undecodable stored header, which fails
+	// cannot be persisted (e.g. a stored cursor ahead of memory, which fails
 	// closed) does not roll back the others and stall on-disk key deletion
 	// for every key; only the failed records are retried at the next flush.
 	var failed []ParticipationID
@@ -397,7 +397,12 @@ func (f *flushOp) apply(db *participationDB) error {
 			err := updateRollingFields(ctx, tx, record)
 			// This should only be updating key usage so ignoring missing keys is not a problem.
 			if err != nil && err != ErrNoKeyForID {
-				if _, rerr := tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT flush_record"); rerr != nil {
+				if errors.Is(err, errUnusableStoredHeader) {
+					// keep what the record's savepoint did (its consumed
+					// subkeys erased, its rolling fields written); the record
+					// is still retried at the next flush
+					db.log.Errorf("participationDB: %v", err)
+				} else if _, rerr := tx.ExecContext(ctx, "ROLLBACK TO SAVEPOINT flush_record"); rerr != nil {
 					return rerr
 				}
 				failed = append(failed, record.ParticipationID)

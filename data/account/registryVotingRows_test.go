@@ -767,7 +767,11 @@ func TestFlushIsolatesCorruptHeader(t *testing.T) {
 	a.NoError(registry.DeleteExpired(25, proto))
 	err = registry.Flush(defaultTimeout)
 	a.ErrorContains(err, "undecodable")
-	a.Equal(bRowsBefore, bOffsetRows(), "B's rows were rewritten despite an undecodable header")
+	// B's transition was refused, but the rows its memory has consumed were
+	// erased (and nothing was rewritten)
+	cachedB := registry.Get(idB)
+	a.Less(bOffsetRows(), bRowsBefore, "B's consumed offset rows were not erased")
+	a.Equal(len(cachedB.Voting.Offsets), bOffsetRows())
 
 	cachedA := registry.Get(idA)
 	a.Equal(votingSnapshot(cachedA.Voting).Header(), registryReadVotingHeader(a, registry, idA), "A's deletion was not persisted")
