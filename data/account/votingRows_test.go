@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -219,6 +220,31 @@ func TestMigrateLegacyVersions(t *testing.T) {
 			a.Equal(tc.version >= 3, restored.StateProofSecrets != nil)
 		})
 	}
+}
+
+// TestMigrationRejectsOutOfRangeIndices checks that a legacy blob whose
+// subkey indices do not fit an SQLite integer is reported as corrupt content,
+// so the node quarantines the file, rather than failing the insert with a
+// driver error that would stop the node from starting.
+func TestMigrationRejectsOutOfRangeIndices(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	a := require.New(t)
+
+	part, tmpDB := makeSmallTestKey(t, a, 0, 300, 10)
+	defer closeDBS(tmpDB)
+	part.Voting.FirstBatch = math.MaxInt64
+
+	partDB, err := db.MakeAccessor(t.Name(), false, true)
+	a.NoError(err)
+	defer closeDBS(partDB)
+	a.NoError(setupTestDBAtVer3(partDB, part.Participation))
+
+	_, err = RestoreParticipation(partDB)
+	a.ErrorIs(err, ErrCorruptedVotingData)
+	a.ErrorContains(err, "out of range")
+	versions, err := getSchemaVersions(partDB)
+	a.NoError(err)
+	a.Equal(PartTableSchemaVersionWholeBlob, versions[PartTableSchemaName], "the migration did not roll back")
 }
 
 // TestMigrationErasesLegacyBlob verifies the v3 migration leaves no trace of
@@ -441,6 +467,7 @@ func TestRestoreDetectsCorruption(t *testing.T) {
 		{"undecodableHeader", "UPDATE ParticipationAccount SET votingHeader=x'ff00'", "undecodable voting header", nil},
 		{"missingBatchRow", "DELETE FROM VotingBatches WHERE batch=(SELECT MAX(batch) FROM VotingBatches)", "missing or extra rows", nil},
 		{"misplacedOffsetRow", "UPDATE VotingOffsets SET off=off-1 WHERE off=(SELECT MIN(off) FROM VotingOffsets)", "offset row 0 has index", nil},
+		{"negativeIndex", "UPDATE VotingBatches SET batch=-1 WHERE batch=(SELECT MAX(batch) FROM VotingBatches)", "negative index", nil},
 		{"undecodableVRF", "UPDATE ParticipationAccount SET vrf=x'ff00'", "undecodable VRF", nil},
 		{"twoAccountRows", "INSERT INTO ParticipationAccount SELECT * FROM ParticipationAccount", "exactly one account row", nil},
 		{"undecodableStateProofKey", "UPDATE StateProofKeys SET key=x'ff00' WHERE round=(SELECT MIN(round) FROM StateProofKeys)", "undecodable state proof key", RestoreParticipationWithSecrets},

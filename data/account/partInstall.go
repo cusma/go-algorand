@@ -220,6 +220,9 @@ func migrateVotingBlobToRows(tx *sql.Tx) error {
 		if err := protocol.Decode(rawVoting, voting); err != nil {
 			return fmt.Errorf("migrateVotingBlobToRows: %w: undecodable voting blob: %v", ErrCorruptedVotingData, err)
 		}
+		if err := checkVotingIndices(voting.OneTimeSignatureSecretsPersistent); err != nil {
+			return fmt.Errorf("migrateVotingBlobToRows: %w", err)
+		}
 		// freshly decoded and unshared: no lock is needed for the snapshot
 		if err := rewriteVotingRows(tx, partkeyFileVotingTarget, voting.OneTimeSignatureSecretsPersistent); err != nil {
 			return fmt.Errorf("migrateVotingBlobToRows: %w", err)

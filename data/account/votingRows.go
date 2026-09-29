@@ -21,6 +21,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 
 	"github.com/algorand/go-algorand/crypto"
@@ -439,11 +440,28 @@ func readKeyedSubkeys(tx *sql.Tx, query string, args ...any) ([]crypto.KeyedSubk
 
 	var result []crypto.KeyedSubkey
 	for rows.Next() {
+		// an index that is not a non-negative integer is corrupt content, so
+		// the key is excluded or its file quarantined, not the load failed
+		var index int64
 		var row crypto.KeyedSubkey
-		if err := rows.Scan(&row.Index, &row.Key); err != nil {
-			return nil, err
+		if err := rows.Scan(&index, &row.Key); err != nil {
+			return nil, fmt.Errorf("%w: unreadable voting subkey row: %v", ErrCorruptedVotingData, err)
 		}
+		if index < 0 {
+			return nil, fmt.Errorf("%w: voting subkey row has negative index %d", ErrCorruptedVotingData, index)
+		}
+		row.Index = uint64(index)
 		result = append(result, row)
 	}
 	return result, rows.Err()
+}
+
+// checkVotingIndices rejects decoded voting secrets whose subkey indices do
+// not fit an SQLite integer, which no generated key has: storing them would
+// fail with a driver error instead of being reported as corrupt content.
+func checkVotingIndices(s crypto.OneTimeSignatureSecretsPersistent) error {
+	if s.FirstBatch > math.MaxInt64-uint64(len(s.Batches)) || s.FirstOffset > math.MaxInt64-uint64(len(s.Offsets)) {
+		return fmt.Errorf("%w: subkey indices out of range (first batch %d, first offset %d)", ErrCorruptedVotingData, s.FirstBatch, s.FirstOffset)
+	}
+	return nil
 }

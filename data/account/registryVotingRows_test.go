@@ -323,6 +323,12 @@ func TestRegistryExcludesCorruptRecord(t *testing.T) {
 			// the healthy key has more batches, so scope the damage to this key's rows
 			execSQL(a, registry.store.Wdb, "DELETE FROM VotingBatches WHERE pk=(SELECT pk FROM Keysets WHERE participationID=?) AND batch=(SELECT MAX(batch) FROM VotingBatches WHERE pk=(SELECT pk FROM Keysets WHERE participationID=?))", corruptID[:], corruptID[:])
 		}, "", false},
+		{"negativeIndex", 0, func(a *require.Assertions, registry *participationDB, corruptID ParticipationID, _ Participation) {
+			execSQL(a, registry.store.Wdb, "UPDATE VotingBatches SET batch=-1 WHERE pk=(SELECT pk FROM Keysets WHERE participationID=?) AND batch=(SELECT MAX(batch) FROM VotingBatches WHERE pk=(SELECT pk FROM Keysets WHERE participationID=?))", corruptID[:], corruptID[:])
+		}, "", false},
+		{"textIndex", 0, func(a *require.Assertions, registry *participationDB, corruptID ParticipationID, _ Participation) {
+			execSQL(a, registry.store.Wdb, "UPDATE VotingBatches SET batch='x' WHERE pk=(SELECT pk FROM Keysets WHERE participationID=?) AND batch=(SELECT MAX(batch) FROM VotingBatches WHERE pk=(SELECT pk FROM Keysets WHERE participationID=?))", corruptID[:], corruptID[:])
+		}, "", false},
 		{"undecodableHeader", 150, func(a *require.Assertions, registry *participationDB, corruptID ParticipationID, _ Participation) {
 			damageHeader(a, registry, corruptID, []byte{0xff, 0x00})
 		}, "undecodable", false},

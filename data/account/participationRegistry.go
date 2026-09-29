@@ -565,6 +565,9 @@ func convertLegacyVotingBlob(tx *sql.Tx, pk int64, rawVoting []byte) error {
 	if err := protocol.Decode(rawVoting, voting); err != nil {
 		return fmt.Errorf("%w: undecodable voting blob: %v", ErrCorruptedVotingData, err)
 	}
+	if err := checkVotingIndices(voting.OneTimeSignatureSecretsPersistent); err != nil {
+		return err
+	}
 	if _, err := tx.Exec("SAVEPOINT convert_record"); err != nil {
 		return err
 	}
@@ -1079,14 +1082,18 @@ func (db *participationDB) getAllFromDB() (records []ParticipationRecord, corrup
 		records = make([]ParticipationRecord, 0, len(scanned))
 		for _, sr := range scanned {
 			batches, offsets, err := readVotingRows(tx, registryVotingTarget(sr.pk))
-			if err != nil {
+			if err != nil && !errors.Is(err, ErrCorruptedVotingData) {
 				return fmt.Errorf("unable to read the voting subkeys of pk %d: %w", sr.pk, err)
 			}
-			if len(sr.rawHeader) > 0 || len(batches)+len(offsets) > 0 {
+			if err != nil || len(sr.rawHeader) > 0 || len(batches)+len(offsets) > 0 {
 				var voting *crypto.OneTimeSignatureSecrets
-				hdr, verr := decodeVotingHeader(sr.rawHeader)
+				verr := err // a corrupt subkey row
 				if verr == nil {
-					voting, verr = votingFromRows(hdr, batches, offsets)
+					var hdr crypto.OneTimeSignatureSecretsHeader
+					hdr, verr = decodeVotingHeader(sr.rawHeader)
+					if verr == nil {
+						voting, verr = votingFromRows(hdr, batches, offsets)
+					}
 				}
 				if verr != nil {
 					db.log.Errorf("participationDB: excluding key %s (pk %d) from the registry and erasing its voting subkeys and state proof keys, its voting data is corrupt: %v; the key cannot vote until it is installed again: if its stored voting header is intact and its .partkey file is present it is re-installed from the file during this startup; otherwise copy the .partkey file aside, delete the key, and install the copy (deleting the key also removes its file), or stop the node, delete %s, and restart to rebuild the registry from the key files",

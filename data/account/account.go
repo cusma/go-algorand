@@ -220,7 +220,7 @@ func restoreParticipationAtVersion(store db.Accessor, version int) (acc Persiste
 		if rowOriented {
 			batches, offsets, err1 = readVotingRows(tx, partkeyFileVotingTarget)
 			if err1 != nil {
-				return fmt.Errorf("RestoreParticipation: could not read voting subkey rows: %v", err1)
+				return fmt.Errorf("RestoreParticipation: could not read voting subkey rows: %w", err1)
 			}
 		}
 
