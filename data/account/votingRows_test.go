@@ -222,6 +222,24 @@ func TestMigrateLegacyVersions(t *testing.T) {
 	}
 }
 
+// TestRestoreEmptyFileIsUnsupported checks that a key file with no tables,
+// as an interrupted key generation leaves behind, is reported as an
+// unsupported schema by the read-only restore as well as by the migrating
+// one, so the genesis generator regenerates it instead of aborting.
+func TestRestoreEmptyFileIsUnsupported(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	a := require.New(t)
+
+	store, err := db.MakeErasableAccessor(filepath.Join(t.TempDir(), "empty.partkey"))
+	a.NoError(err)
+	defer store.Close()
+
+	_, err = RestoreParticipationUnmigrated(store)
+	a.ErrorIs(err, ErrUnsupportedSchema)
+	_, err = RestoreParticipation(store)
+	a.ErrorIs(err, ErrUnsupportedSchema)
+}
+
 // TestMigrationRejectsOutOfRangeIndices checks that a legacy blob whose
 // subkey indices do not fit an SQLite integer is reported as corrupt content,
 // so the node quarantines the file, rather than failing the insert with a

@@ -250,9 +250,18 @@ func enableSecureDelete(tx *sql.Tx) error {
 }
 
 // PartkeySchemaVersion reads the participation file's schema version without
-// migrating it.  Returns ErrUnsupportedSchema if no version is recorded.
+// migrating it.  Returns ErrUnsupportedSchema, as the migration does, if the
+// file has no schema table (e.g. one an interrupted key generation left
+// empty) or records no version.
 func PartkeySchemaVersion(store db.Accessor) (version int, err error) {
 	err = store.Atomic(func(ctx context.Context, tx *sql.Tx) error {
+		var tables int
+		if serr := tx.QueryRow("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='schema'").Scan(&tables); serr != nil {
+			return serr
+		}
+		if tables == 0 {
+			return ErrUnsupportedSchema
+		}
 		serr := tx.QueryRow("SELECT version FROM schema WHERE tablename=?", PartTableSchemaName).Scan(&version)
 		if serr == sql.ErrNoRows {
 			return ErrUnsupportedSchema
