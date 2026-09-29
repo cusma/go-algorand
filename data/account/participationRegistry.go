@@ -937,17 +937,22 @@ func (db *participationDB) DeleteExpired(latestRound basics.Round, agreementProt
 // overwriting the whole record would lose (and then flush over) that update.
 // The caller must hold db.mutex.
 //
-// A key deleted and re-inserted under the same ID in that window receives the
-// snapshot's Voting as well.  That is deliberate and safe: the ID pins the key
-// material, and the snapshot was advanced past the stored cursor the
-// re-inserted copy was fast-forwarded to, so it never rewinds the entry.
-// Skipping such entries would instead leave this round's deletion out of the
-// cache until the next pass.
+// A key deleted and re-inserted under the same ID in that window is not
+// covered by a stored cursor: the delete erased it, so the re-inserted copy
+// was stored as it came and may be ahead of the snapshot.  Merging would then
+// rewind the entry below the store, so an entry that is ahead is kept; any
+// other entry receives the snapshot's Voting (the ID pins the key material,
+// so the snapshot can only advance it).
 func (db *participationDB) mergeAdvancedVoting(updated []ParticipationRecord) {
 	for _, r := range updated {
 		live, ok := db.cache[r.ParticipationID]
 		if !ok {
 			// deleted meanwhile; do not resurrect it in the cache
+			continue
+		}
+		if live.Voting != nil && r.Voting != nil &&
+			storedHeaderAhead(votingSnapshot(live.Voting).Header(), votingSnapshot(r.Voting).Header()) {
+			// re-inserted meanwhile from a copy ahead of the snapshot
 			continue
 		}
 		live.Voting = r.Voting

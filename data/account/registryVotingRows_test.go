@@ -682,6 +682,42 @@ func (b *blockingOp) apply(*participationDB) error {
 	return nil
 }
 
+// TestMergeAdvancedVotingNeverRewinds verifies that a DeleteExpired snapshot
+// taken before the key was deleted and re-inserted from a copy that is ahead
+// does not rewind the re-inserted entry when it is merged, which would make
+// every later flush of the key fail the monotonicity guard.
+func TestMergeAdvancedVotingNeverRewinds(t *testing.T) {
+	partitiontest.PartitionTest(t)
+	a := require.New(t)
+
+	registry, dbfile := getRegistry(t)
+	defer registryCloseTest(t, registry, dbfile)
+
+	const dilution = 10
+	p := makeTestParticipation(a, 1, 1, 1000, dilution)
+	id, err := registry.Insert(p)
+	a.NoError(err)
+
+	// DeleteExpired's snapshot, taken before the delete and advanced to round 7
+	snap := registry.Get(id)
+	snap.Voting.DeleteBeforeFineGrained(basics.OneTimeIDForRound(7, dilution), dilution)
+
+	// meanwhile the key is deleted and re-inserted from a copy at round 500
+	a.NoError(registry.Delete(id))
+	a.NoError(registry.Flush(defaultTimeout))
+	p.Voting.DeleteBeforeFineGrained(basics.OneTimeIDForRound(500, dilution), dilution)
+	_, err = registry.Insert(p)
+	a.NoError(err)
+	reinserted := votingSnapshot(registry.Get(id).Voting).Header()
+
+	registry.mutex.Lock()
+	registry.mergeAdvancedVoting([]ParticipationRecord{snap})
+	registry.mutex.Unlock()
+
+	a.Equal(reinserted, votingSnapshot(registry.Get(id).Voting).Header(), "the merge rewound the re-inserted entry")
+	a.NoError(registry.Flush(defaultTimeout))
+}
+
 // TestReinsertDuringDeferredDelete verifies a Delete that arrives while the
 // key's insert is still being written is honored once the write lands, and
 // that a re-insert racing that deferred deletion cannot order its write ahead
