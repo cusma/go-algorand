@@ -85,8 +85,8 @@ State proof keys follow the same row-per-key pattern in their own table.
 
 Files created by older releases (schema version 3) stored the whole voting
 keyset as one BLOB in a **voting** column; the migration converts it to the
-header and rows and drops that column, so no consumed subkey lingers in the
-file. **algod** migrates such a file in place when it loads it
+header and rows and drops that column, erasing the legacy blob. **algod**
+migrates such a file in place when it loads it
 at startup (and migrates the copy it receives through the REST install
 endpoint), as does `algokey part reparent`; the read-only commands
 (`algokey part info`, `algokey part keyreg --keyfile`,
@@ -101,7 +101,8 @@ its content fails validation, is quarantined rather than failing startup: it is
 renamed to `*.old` (or `*.old.N`), logged at error level, and never loaded
 again. The rename erases nothing, so the quarantined file still contains the
 key's private material and needs operator handling: repair it and rename it
-back, or delete it securely. The key does not vote until then.
+back, or delete it securely. Unless the key is already installed in the
+participation registry, it does not vote until then.
 
 Similar functionality is built into **goal** along with convenience methods to:
 * Generate and install.
@@ -121,6 +122,13 @@ In older versions of **algod**, keys were installed by dropping the database
 file into the data directory. This caused frequent errors with many deployments
 because the data directory is often owned by a restricted user and copying the
 files around could easily lead to permission errors.
+
+**algod** still loads key files found in the data directory at startup: it
+first advances each file to the current round, erasing the subkeys of rounds
+already past, and then installs the key. While the node runs, a file whose key
+was already installed before that startup is not updated, so it keeps the
+subkeys of the rounds since then; delete such files securely once they are no
+longer needed.
 
 The current version of **algod** supports a series of endpoints on the Admin API
 to install and manage keys. One of them is a POST for installation:

@@ -1015,6 +1015,10 @@ func (node *AlgorandFullNode) InstallParticipationKey(partKeyBinary []byte) (acc
 		return account.ParticipationID{}, fmt.Errorf("cannot install partkey with missing (zero) parent address")
 	}
 
+	if err := node.advanceParticipationKey(partkey); err != nil {
+		node.log.Warnf("InstallParticipationKey: could not advance the participation key to the current round: %v", err)
+	}
+
 	// Tell the AccountManager about the Participation (dupes don't matter) so we ignore the return value
 	// This is ephemeral since we are deleting the file after this function is done
 	added, err := node.accountManager.AddParticipation(partkey, true)
@@ -1093,14 +1097,18 @@ func (node *AlgorandFullNode) loadParticipationKeys() error {
 					renamedFileName = fmt.Sprintf("%s.old.%d", fullname, i)
 				}
 				if renameErr := os.Rename(fullname, renamedFileName); renameErr != nil {
-					node.log.Errorf("loadParticipationKeys: participation key file %s cannot be loaded (%v) and could not be renamed to %s: %v; the key will not vote and the file will be retried at the next startup", info.Name(), loadErr, renamedFileName, renameErr)
+					node.log.Errorf("loadParticipationKeys: participation key file %s cannot be loaded (%v) and could not be renamed to %s: %v; unless the key is already installed in the participation registry it will not vote, and the file will be retried at the next startup", info.Name(), loadErr, renamedFileName, renameErr)
 				} else {
-					node.log.Errorf("loadParticipationKeys: participation key file %s cannot be loaded (%v); renamed to %s and skipped from now on. The renamed file still contains the key's private material and needs operator handling: repair it and rename it back, or delete it securely. The key will not vote until then.", info.Name(), loadErr, filepath.Base(renamedFileName))
+					node.log.Errorf("loadParticipationKeys: participation key file %s cannot be loaded (%v); renamed to %s and skipped from now on. The renamed file still contains the key's private material and needs operator handling: repair it and rename it back, or delete it securely. Unless the key is already installed in the participation registry, it will not vote until then.", info.Name(), loadErr, filepath.Base(renamedFileName))
 				}
 			} else {
 				return fmt.Errorf("AlgorandFullNode.loadParticipationKeys: cannot load account at %v: %v", info.Name(), err)
 			}
 		} else {
+			if err := node.advanceParticipationKey(part); err != nil {
+				node.log.Warnf("loadParticipationKeys: could not advance participation key file %s to the current round: %v", info.Name(), err)
+			}
+
 			// Tell the AccountManager about the Participation (dupes don't matter)
 			// make sure that all stateproof data (with are not the keys per round)
 			// are being store to the registry in that point
@@ -1121,6 +1129,21 @@ func (node *AlgorandFullNode) loadParticipationKeys() error {
 	}
 
 	return nil
+}
+
+// advanceParticipationKey deletes from part, in memory and in its file, the
+// voting subkeys of the rounds the ledger has already passed, as the round
+// loop would.  It runs before a copy is handed to the registry, so a copy that
+// lags the ledger (a key file in the data directory, which is not advanced
+// while its key is already registered, or an uploaded or reparented copy)
+// never writes retired subkeys into the registry.
+func (node *AlgorandFullNode) advanceParticipationKey(part account.PersistedParticipation) error {
+	r := node.ledger.Latest()
+	hdr, err := node.ledger.BlockHdr(agreement.ParamsRound(r))
+	if err != nil {
+		return err
+	}
+	return <-part.DeleteOldKeys(r+1, config.Consensus[hdr.CurrentProtocol])
 }
 
 func insertStateProofToRegistry(part account.PersistedParticipation, node *AlgorandFullNode) error {
