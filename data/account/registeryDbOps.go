@@ -141,18 +141,23 @@ func (r *registerOp) apply(db *participationDB) error {
 }
 
 // fastForwardToStoredCursor advances secrets to the most advanced deletion
-// cursor already persisted for id, so an insert can never rewind the cursor
-// and resurrect retired keys on disk.  Fast-forwarding is exact because the
-// participation ID commits to the key material: a stored cursor ahead of the
-// inserted copy means those rounds were already voted and retired.
+// cursor persisted for id, so an insert never rewinds a cursor the registry
+// still holds.  Fast-forwarding is exact because the participation ID commits
+// to the key material: a stored cursor ahead of the inserted copy means those
+// rounds were already voted and retired.  The guarantee is per ID and holds
+// only while the ID's rows are stored: a copy of the same voting key under
+// another ID (the ID also commits to the parent, so a reparented copy) or a
+// copy re-installed after a Delete (which erases the stored header) is
+// inserted as it is.  The node advances every copy to the current round
+// before inserting it, which covers those cases.
 //
 // It fails closed when a stored header for the id cannot be used (it is
 // undecodable, or carries a different verifier than the key the ID commits
 // to): the registry may be ahead of the supplied copy (a key file restored
 // from a backup, or one that missed the last round's deletion), and a copy
 // whose relation to the stored cursor cannot be established must not replace
-// it.  The record stays excluded from the cache until the operator rebuilds
-// the registry.
+// it.  The record stays excluded from the cache until the key is deleted (it
+// can then be installed again) or the registry is rebuilt.
 func fastForwardToStoredCursor(ctx context.Context, tx *sql.Tx, log logging.Logger, id ParticipationID, secrets *crypto.OneTimeSignatureSecrets, dilution uint64) error {
 	// KeyDilution 0 defers to the consensus default, as DeleteExpired and
 	// DeleteOldKeys resolve it (the value has been the same in every version)
@@ -225,9 +230,10 @@ func (i *insertOp) apply(db *participationDB) (err error) {
 
 	err = db.store.Wdb.Atomic(func(ctx context.Context, tx *sql.Tx) error {
 		// The inserted copy may lag what the registry already retired (the
-		// .partkey file and the registry are independent stores).  The ID
-		// commits to the key material, so fast-forward the copy to the stored
-		// cursor, then snapshot it for persistence.
+		// .partkey file and the registry are independent stores).  If the
+		// registry still holds a cursor for this ID, fast-forward the copy to
+		// it (the ID commits to the key material), then snapshot it for
+		// persistence.
 		var rawVotingHeader []byte
 		var voting crypto.OneTimeSignatureSecretsPersistent
 		if i.record.Voting != nil {
