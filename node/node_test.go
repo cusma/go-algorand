@@ -771,16 +771,26 @@ func TestRemoveParticipationKeyExcludedFromRegistry(t *testing.T) {
 	require.NoError(t, err)
 	regdb.Close()
 
-	n, err := MakeFull(logging.TestingLog(t), testDirectory, config.GetDefaultLocal(), []string{}, genesis)
+	logPath := filepath.Join(testDirectory, "node.log")
+	logFile, err := os.Create(logPath)
+	require.NoError(t, err)
+	defer logFile.Close()
+	log := logging.NewLogger()
+	log.SetOutput(logFile)
+	n, err := MakeFull(log, testDirectory, config.GetDefaultLocal(), []string{}, genesis)
 	require.NoError(t, err)
 	require.NoError(t, n.Start())
 	defer n.Stop()
 
 	// excluded: not served, and the key file could not re-install it (its
-	// relation to the stored cursor cannot be established)
+	// relation to the stored cursor cannot be established), which is
+	// reported at error level rather than skipped like a duplicate
 	_, err = n.GetParticipationKey(id)
 	require.ErrorIs(t, err, account.ErrParticipationIDNotFound)
 	require.FileExists(t, partfile)
+	logged, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	require.Contains(t, string(logged), "was rejected by the participation registry")
 
 	// but it can be deleted, file included, after which the ID is unknown
 	require.NoError(t, n.RemoveParticipationKey(id))

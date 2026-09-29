@@ -1115,7 +1115,12 @@ func (node *AlgorandFullNode) loadParticipationKeys() error {
 			// These files are not ephemeral and must be deleted eventually since
 			// this function is called to load files located in the node on startup
 			added, err := node.accountManager.AddParticipation(part, false)
-			if err != nil || !added {
+			if err != nil {
+				node.log.Errorf("loadParticipationKeys: participation key file %s for %s was rejected by the participation registry: %v; the key will not vote until this is resolved (the file is retried at the next startup)", info.Name(), part.Address(), err)
+				part.Close()
+				continue
+			}
+			if !added {
 				part.Close()
 				continue
 			}
