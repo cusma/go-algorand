@@ -137,7 +137,17 @@ func TestRegistryMigrationV1ToV2(t *testing.T) {
 	})
 	a.NoError(err)
 
-	// opening the registry runs dbSchemaUpgrade1
+	// run the upgrade on its own first, to check the database as it left it
+	// (loading the registry erases an excluded record's rows): nothing of the
+	// failed conversion attempt was kept, only the mid-life key's rows exist
+	err = db.Initialize(rootDB.Wdb, []db.Migration{dbSchemaUpgrade0, func(ctx context.Context, tx *sql.Tx, newDatabase bool) error {
+		return dbSchemaUpgrade1(ctx, tx, newDatabase, logging.TestingLog(t))
+	}})
+	a.NoError(err)
+	a.Equal(len(midLife.Voting.Batches), countTableRows(a, rootDB.Rdb, "VotingBatches"), "rows left behind by the failed conversion")
+	a.Equal(len(midLife.Voting.Offsets), countTableRows(a, rootDB.Rdb, "VotingOffsets"), "rows left behind by the failed conversion")
+
+	// opening the registry (the upgrade has already run) builds the cache
 	registry, err := makeParticipationRegistry(rootDB, logging.TestingLog(t))
 	a.NoError(err)
 	defer registryCloseTest(t, registry, "")
@@ -167,13 +177,11 @@ func TestRegistryMigrationV1ToV2(t *testing.T) {
 
 	// the unconvertible record did not fail the upgrade: its blob (which held
 	// every subkey) is gone, replaced by a marker that never decodes, so it
-	// is excluded from the cache, and nothing of the failed conversion
-	// attempt was kept
+	// is excluded from the cache
 	a.Equal(unusableVotingHeader, registryReadRawVotingHeader(a, registry, unconvertible.ID()))
 	_, err = decodeVotingHeader(unusableVotingHeader)
 	a.Error(err, "the unusable marker must never decode as a header")
 	a.True(registry.Get(unconvertible.ID()).IsZero(), "unconvertible record not excluded")
-	a.Equal(len(midLife.Voting.Batches), countTableRows(a, registry.store.Rdb, "VotingBatches"), "rows left behind by the failed conversion")
 
 	// the record without voting secrets loads as a zero-value placeholder
 	// (TestFlushWithoutVotingSecrets covers flushing it)

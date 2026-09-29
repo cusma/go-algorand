@@ -479,7 +479,10 @@ var unusableVotingHeader = []byte{0xc1}
 // unable to start with no indication of which record is at fault.  Instead
 // the failure is logged with its pk and cause, and its votingHeader is set to
 // unusableVotingHeader, so the record is excluded from the cache at load
-// time while its blob is erased along with the legacy column.
+// time while its blob is erased along with the legacy column.  Only content
+// errors (ErrCorruptedVotingData) are handled that way: a database failure
+// while converting fails the upgrade, which rolls back and is retried at the
+// next start, rather than discard an intact key.
 func dbSchemaUpgrade1(ctx context.Context, tx *sql.Tx, newDatabase bool, log logging.Logger) error {
 	_, err := tx.Exec(createVotingBatches)
 	if err != nil {
@@ -535,6 +538,12 @@ func dbSchemaUpgrade1(ctx context.Context, tx *sql.Tx, newDatabase bool, log log
 		if convErr == nil {
 			continue
 		}
+		if !errors.Is(convErr, ErrCorruptedVotingData) {
+			// a database failure, not unconvertible content: fail the
+			// upgrade (it rolls back and is retried at the next start)
+			// rather than discard an intact key
+			return fmt.Errorf("unable to convert the voting blob of pk %d: %w", entry.pk, convErr)
+		}
 		log.Errorf("participationDB: voting blob of registry record pk %d cannot be converted and is discarded; the record will be excluded at load; copy its .partkey file aside, delete the key, and install the copy (%v)", entry.pk, convErr)
 		if _, err = tx.Exec("UPDATE Rolling SET votingHeader=? WHERE pk=?", unusableVotingHeader, entry.pk); err != nil {
 			return fmt.Errorf("failed to mark the voting header of pk %d unusable: %w", entry.pk, err)
@@ -554,7 +563,7 @@ func dbSchemaUpgrade1(ctx context.Context, tx *sql.Tx, newDatabase bool, log log
 func convertLegacyVotingBlob(tx *sql.Tx, pk int64, rawVoting []byte) error {
 	voting := &crypto.OneTimeSignatureSecrets{}
 	if err := protocol.Decode(rawVoting, voting); err != nil {
-		return fmt.Errorf("undecodable voting blob: %w", err)
+		return fmt.Errorf("%w: undecodable voting blob: %v", ErrCorruptedVotingData, err)
 	}
 	if _, err := tx.Exec("SAVEPOINT convert_record"); err != nil {
 		return err
