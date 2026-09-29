@@ -91,10 +91,15 @@ at startup (and migrates the copy it receives through the REST install
 endpoint), as does `algokey part reparent`; the read-only commands
 (`algokey part info`, `algokey part keyreg --keyfile`,
 `goal account changeonlinestatus --partkeyfile`) read the file as-is without
-migrating it. Once a file is migrated, older releases cannot read it; rolling
-back to an older release requires a pre-upgrade backup of the file, or
-generating and registering fresh keys. Files at schema versions 1 and 2 are
-migrated through the same path.
+migrating it. Once a file is migrated, older releases cannot read it, and
+neither can they read the files this release creates (schema version 4,
+including files reparented with this release's `algokey part reparent`): a key
+for a node that still runs an older release must be generated with that
+release's tools or on the node itself
+(`POST /v2/participation/generate/{address}`). Rolling back to an older
+release therefore requires a pre-upgrade backup of the file, or generating
+fresh keys with the older release's tools (or on the node) and registering
+them. Files at schema versions 1 and 2 are migrated through the same path.
 
 A key file **algod** cannot load, because its schema version is unsupported or
 its content fails validation, is quarantined rather than failing startup: it is
