@@ -581,6 +581,10 @@ func TestParticipation_RecordMultipleUpdates_DB(t *testing.T) {
 	registry, _ := getRegistry(t)
 
 	p := makeTestParticipation(a, 1, 1, 2000000, 0)
+	// the rows below store no VRF and no voting key, so the ID must not commit
+	// to them either (loading checks the ID against the stored key)
+	p.VRF = nil
+	p.Voting = nil
 	id := p.ID()
 
 	// Insert the same record twice

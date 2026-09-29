@@ -1081,27 +1081,33 @@ func (db *participationDB) getAllFromDB() (records []ParticipationRecord, corrup
 		// than blocking the whole registry (and with it the node) from loading
 		records = make([]ParticipationRecord, 0, len(scanned))
 		for _, sr := range scanned {
-			batches, offsets, err := readVotingRows(tx, registryVotingTarget(sr.pk))
-			if err != nil && !errors.Is(err, ErrCorruptedVotingData) {
-				return fmt.Errorf("unable to read the voting subkeys of pk %d: %w", sr.pk, err)
+			batches, offsets, verr := readVotingRows(tx, registryVotingTarget(sr.pk))
+			if verr != nil && !errors.Is(verr, ErrCorruptedVotingData) {
+				return fmt.Errorf("unable to read the voting subkeys of pk %d: %w", sr.pk, verr)
 			}
-			if err != nil || len(sr.rawHeader) > 0 || len(batches)+len(offsets) > 0 {
-				var voting *crypto.OneTimeSignatureSecrets
-				verr := err // a corrupt subkey row
+			if verr == nil && (len(sr.rawHeader) > 0 || len(batches)+len(offsets) > 0) {
+				var hdr crypto.OneTimeSignatureSecretsHeader
+				hdr, verr = decodeVotingHeader(sr.rawHeader)
 				if verr == nil {
-					var hdr crypto.OneTimeSignatureSecretsHeader
-					hdr, verr = decodeVotingHeader(sr.rawHeader)
-					if verr == nil {
-						voting, verr = votingFromRows(hdr, batches, offsets)
-					}
+					sr.record.Voting, verr = votingFromRows(hdr, batches, offsets)
 				}
-				if verr != nil {
-					db.log.Errorf("participationDB: excluding key %s (pk %d) from the registry and erasing its voting subkeys and state proof keys, its voting data is corrupt: %v; the key cannot vote until it is installed again: if its stored voting header is intact and its .partkey file is present it is re-installed from the file during this startup; otherwise copy the .partkey file aside, delete the key, and install the copy (deleting the key also removes its file), or stop the node, delete %s, and restart to rebuild the registry from the key files",
-						sr.record.ParticipationID, sr.pk, verr, config.ParticipationRegistryFilename)
-					corrupt[sr.record.ParticipationID] = validityWindow{firstValid: sr.record.FirstValid, lastValid: sr.record.LastValid}
-					continue
+			}
+			// The participation ID commits to the voting key, so stored voting
+			// data (or the lack of it) that yields another ID is not this key's:
+			// a damaged header that outlived the rows erased when the record was
+			// first excluded would otherwise load as a key without voting secrets
+			if verr == nil {
+				stored := Participation{Parent: sr.record.Account, VRF: sr.record.VRF, Voting: sr.record.Voting,
+					FirstValid: sr.record.FirstValid, LastValid: sr.record.LastValid, KeyDilution: sr.record.KeyDilution}
+				if stored.ID() != sr.record.ParticipationID {
+					verr = fmt.Errorf("%w: its stored voting key does not match the participation ID", ErrCorruptedVotingData)
 				}
-				sr.record.Voting = voting
+			}
+			if verr != nil {
+				db.log.Errorf("participationDB: excluding key %s (pk %d) from the registry and erasing its voting subkeys and state proof keys, its voting data is corrupt: %v; the key cannot vote until it is installed again: if its stored voting header is intact and its .partkey file is present it is re-installed from the file during this startup; otherwise copy the .partkey file aside, delete the key, and install the copy (deleting the key also removes its file), or stop the node, delete %s, and restart to rebuild the registry from the key files",
+					sr.record.ParticipationID, sr.pk, verr, config.ParticipationRegistryFilename)
+				corrupt[sr.record.ParticipationID] = validityWindow{firstValid: sr.record.FirstValid, lastValid: sr.record.LastValid}
+				continue
 			}
 			records = append(records, sr.record)
 		}

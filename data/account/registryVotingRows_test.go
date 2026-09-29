@@ -413,15 +413,13 @@ func TestRegistryExcludesCorruptRecord(t *testing.T) {
 				a.True(registry.Get(corruptID).IsZero(), "rejected copy usable from the cache")
 				a.Zero(batches, "rows written despite an unusable header")
 				a.NoError(registry.Flush(defaultTimeout))
-				// after a reload the record is either still excluded or, once
-				// its rows are erased and its header is empty, indistinguishable
-				// from a key stored without voting secrets; either way nothing
-				// is signable
+				// a reload keeps the record excluded: with its rows erased, an
+				// empty or foreign header must not pass for a key stored without
+				// voting secrets (the participation ID commits to the voting key)
 				a.NoError(registry.initializeCache())
-				if reloaded := registry.Get(corruptID); !reloaded.IsZero() {
-					a.Empty(reloaded.Voting.Batches, "older copy resurrected the excluded record")
-					a.Empty(reloaded.Voting.Offsets, "older copy resurrected the excluded record")
-				}
+				a.True(registry.Get(corruptID).IsZero(), "excluded record came back after a reload")
+				_, _, excluded = registry.GetExcluded(corruptID)
+				a.True(excluded, "excluded record not reported as excluded after a reload")
 				a.False(registry.Get(healthyID).IsZero())
 
 				// cleanup: by expiry or on request, the record's rows are gone
